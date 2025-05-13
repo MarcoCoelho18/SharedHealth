@@ -1,0 +1,6 @@
+name: SharedHealthPlugin
+main: com.macacomilk.sharedhealth.SharedHealthPlugin
+version: 1.0
+api-version: "1.21"
+description: Synchronizes health among players
+authors: [YourName]
