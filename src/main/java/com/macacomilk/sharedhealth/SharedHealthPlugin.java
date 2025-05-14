@@ -1,22 +1,19 @@
 package com.macacomilk.sharedhealth;
 
 import java.io.File;
-import java.util.Arrays;
-import java.util.Comparator;
 import java.util.HashSet;
-import java.util.List;
 import java.util.Random;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.stream.Collectors;
 
 import org.bukkit.Bukkit;
 import org.bukkit.GameMode;
 import org.bukkit.GameRule;
 import org.bukkit.Location;
 import org.bukkit.Material;
+import org.bukkit.Particle;
 import org.bukkit.Sound;
 import org.bukkit.World;
 import org.bukkit.WorldCreator;
@@ -46,10 +43,10 @@ public final class SharedHealthPlugin extends JavaPlugin implements Listener {
     private final Random random = new Random();
     private final Set<UUID> disconnectedPlayers = new HashSet<>();
     private static final String WAITING_WORLD_NAME = "sharedhealth_waiting_area";
-    private static final int MAX_WORLD_HISTORY = 2;
     private Location waitingAreaCenter;
     private final AtomicInteger worldProgress = new AtomicInteger(0);
     private boolean isGeneratingWorld = false;
+    private World oldWorldToDelete = null;
 
     @Override
     public void onEnable() {
@@ -62,7 +59,7 @@ public final class SharedHealthPlugin extends JavaPlugin implements Listener {
             
             // Schedule repeating tasks
             scheduleWaitingAreaChecks();
-            scheduleProgressUpdates();
+            scheduleAmbientSounds();
             
             // Set initial world
             currentWorld = Bukkit.getWorlds().get(0);
@@ -105,28 +102,83 @@ public final class SharedHealthPlugin extends JavaPlugin implements Listener {
         for (int x = -7; x <= 7; x++) {
             for (int z = -7; z <= 7; z++) {
                 waitingWorld.getBlockAt(x, 4, z).setType(Material.BEDROCK);
-                waitingWorld.getBlockAt(x, 5, z).setType(Material.GRASS_BLOCK);
+                // Create patterned floor
+                if ((x + z) % 2 == 0) {
+                    waitingWorld.getBlockAt(x, 5, z).setType(Material.POLISHED_ANDESITE);
+                } else {
+                    waitingWorld.getBlockAt(x, 5, z).setType(Material.POLISHED_DIORITE);
+                }
             }
         }
         
-        // Create walls
+        // Create decorative walls
         for (int y = 5; y <= 10; y++) {
             for (int x = -8; x <= 8; x++) {
-                waitingWorld.getBlockAt(x, y, -8).setType(Material.BEDROCK);
-                waitingWorld.getBlockAt(x, y, 8).setType(Material.BEDROCK);
+                Material wallMaterial = (y % 2 == 0) ? Material.STONE_BRICKS : Material.MOSSY_STONE_BRICKS;
+                waitingWorld.getBlockAt(x, y, -8).setType(wallMaterial);
+                waitingWorld.getBlockAt(x, y, 8).setType(wallMaterial);
             }
             for (int z = -7; z <= 7; z++) {
-                waitingWorld.getBlockAt(-8, y, z).setType(Material.BEDROCK);
-                waitingWorld.getBlockAt(8, y, z).setType(Material.BEDROCK);
+                Material wallMaterial = (y % 2 == 0) ? Material.STONE_BRICKS : Material.MOSSY_STONE_BRICKS;
+                waitingWorld.getBlockAt(-8, y, z).setType(wallMaterial);
+                waitingWorld.getBlockAt(8, y, z).setType(wallMaterial);
             }
         }
         
-        // Create glass ceiling
+        // Create decorative pillars at corners
+        for (int y = 5; y <= 11; y++) {
+            Material pillarMaterial = (y % 3 == 0) ? Material.QUARTZ_PILLAR : Material.SMOOTH_QUARTZ;
+            waitingWorld.getBlockAt(-8, y, -8).setType(pillarMaterial);
+            waitingWorld.getBlockAt(-8, y, 8).setType(pillarMaterial);
+            waitingWorld.getBlockAt(8, y, -8).setType(pillarMaterial);
+            waitingWorld.getBlockAt(8, y, 8).setType(pillarMaterial);
+        }
+        
+        // Create stained glass ceiling with pattern
         for (int x = -7; x <= 7; x++) {
             for (int z = -7; z <= 7; z++) {
-                waitingWorld.getBlockAt(x, 11, z).setType(Material.GLASS);
+                Material glassType;
+                if (Math.abs(x) == Math.abs(z)) {
+                    glassType = Material.RED_STAINED_GLASS;
+                } else if (x == 0 || z == 0) {
+                    glassType = Material.BLUE_STAINED_GLASS;
+                } else {
+                    glassType = Material.WHITE_STAINED_GLASS;
+                }
+                waitingWorld.getBlockAt(x, 11, z).setType(glassType);
             }
         }
+        
+        // Add decorative lighting (sea lanterns)
+        for (int x = -6; x <= 6; x += 4) {
+            for (int z = -6; z <= 6; z += 4) {
+                waitingWorld.getBlockAt(x, 10, z).setType(Material.SEA_LANTERN);
+            }
+        }
+        
+        // Add some plants and decorations
+waitingWorld.getBlockAt(2, 6, 0).setType(Material.FLOWER_POT);
+waitingWorld.getBlockAt(-2, 6, 0).setType(Material.FLOWER_POT);
+
+// Add some banners on walls
+for (int x = -6; x <= 6; x += 3) {
+    waitingWorld.getBlockAt(x, 8, -7).setType(Material.WHITE_WALL_BANNER);
+    waitingWorld.getBlockAt(x, 8, 7).setType(Material.WHITE_WALL_BANNER);
+}
+
+// Add red carpet to the 3x3 center area
+for (int x = -1; x <= 1; x++) {
+    for (int z = -1; z <= 1; z++) {
+        waitingWorld.getBlockAt(x, 6, z).setType(Material.RED_CARPET);
+    }
+}
+
+        
+        // Add some seating (stairs)
+        waitingWorld.getBlockAt(3, 5, 3).setType(Material.OAK_STAIRS);
+        waitingWorld.getBlockAt(-3, 5, 3).setType(Material.OAK_STAIRS);
+        waitingWorld.getBlockAt(3, 5, -3).setType(Material.OAK_STAIRS);
+        waitingWorld.getBlockAt(-3, 5, -3).setType(Material.OAK_STAIRS);
     }
 
     private void scheduleWaitingAreaChecks() {
@@ -141,32 +193,26 @@ public final class SharedHealthPlugin extends JavaPlugin implements Listener {
                         player.getLocation().getZ() < -7 || player.getLocation().getZ() > 7) {
                         player.teleport(waitingAreaCenter);
                     }
+                    
+                    // Add ambient particles around players
+                    player.spawnParticle(Particle.END_ROD, 
+                        player.getLocation().add(0, 2, 0), 
+                        3, 0.5, 0.5, 0.5, 0.05);
                 }
             }
         }, 0L, 20L);
     }
 
-    private void scheduleProgressUpdates() {
+    private void scheduleAmbientSounds() {
         Bukkit.getScheduler().scheduleSyncRepeatingTask(this, () -> {
-            if (isGeneratingWorld) {
-                int progress = worldProgress.get();
-                Component message = Component.text()
-                    .append(Component.text("Generating world: ", NamedTextColor.YELLOW))
-                    .append(Component.text(createProgressBar(progress), NamedTextColor.GREEN))
-                    .append(Component.text(" " + progress + "%", NamedTextColor.WHITE))
-                    .build();
-                
-                Bukkit.getOnlinePlayers().stream()
-                    .filter(p -> p.getWorld().equals(waitingWorld))
-                    .forEach(p -> p.sendActionBar(message));
+            for (Player player : Bukkit.getOnlinePlayers()) {
+                if (player.getWorld().equals(waitingWorld)) {
+                    player.playSound(player.getLocation(), 
+                        Sound.AMBIENT_UNDERWATER_LOOP, 
+                        0.3f, 1.0f);
+                }
             }
-        }, 0L, 10L);
-    }
-
-    private String createProgressBar(int progress) {
-        int bars = (int) (progress / 5.0);
-        return "§a" + "|".repeat(Math.max(0, bars)) +
-               "§7" + "|".repeat(Math.max(0, 20 - bars));
+        }, 0L, 100L); // Every 5 seconds
     }
 
     @EventHandler
@@ -177,10 +223,12 @@ public final class SharedHealthPlugin extends JavaPlugin implements Listener {
             !currentWorld.equals(waitingWorld)) {
             
             Bukkit.getScheduler().runTaskLater(this, () -> {
-                resetPlayer(player);
+                // Don't reset inventory on join
                 player.teleport(currentWorld.getSpawnLocation());
                 player.setGameMode(GameMode.SURVIVAL);
                 player.setInvulnerable(false);
+                player.setHealth(20);
+                player.setFoodLevel(20);
             }, 1L);
         }
     }
@@ -215,118 +263,95 @@ public final class SharedHealthPlugin extends JavaPlugin implements Listener {
     }
 
     private void generateNewWorld() {
-    if (isGeneratingWorld) return;
-    isGeneratingWorld = true;
-    worldProgress.set(0);
+        if (isGeneratingWorld) return;
+        isGeneratingWorld = true;
+        worldProgress.set(0);
 
-    broadcastToWaiting(Component.text("Starting world generation...", NamedTextColor.YELLOW));
-    updateProgress(5, "Preparing world generator");
+        broadcastToWaiting(Component.text("Starting world generation...", NamedTextColor.YELLOW));
 
-    Bukkit.getScheduler().runTaskAsynchronously(this, () -> {
-        try {
-            long seed = random.nextLong();
-            String worldName = "world_" + System.currentTimeMillis();
-
-            updateProgress(10, "Setting up world parameters");
-            WorldCreator creator = new WorldCreator(worldName)
-                .seed(seed)
-                .environment(World.Environment.NORMAL);
-
-            updateProgress(20, "Generating terrain");
-
-            // Create world on main thread
-            World newWorld;
+        Bukkit.getScheduler().runTaskAsynchronously(this, () -> {
             try {
-                newWorld = Bukkit.getScheduler().callSyncMethod(this, () -> creator.createWorld()).get();
-                if (newWorld == null) {
-                    throw new IllegalStateException("World creation failed");
-                }
-            } catch (InterruptedException | ExecutionException e) {
-                Thread.currentThread().interrupt();
-                throw new IllegalStateException("World creation failed", e);
-            }
+                long seed = random.nextLong();
+                String worldName = "world_" + System.currentTimeMillis();
 
-            for (int i = 0; i < 5; i++) {
-                updateProgress(30 + (i * 10), "Loading chunks (" + (i + 1) + "/5)");
+                // Simulate generation time
+                for (int i = 0; i <= 100; i++) {
+                    try {
+                        Thread.sleep(50);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        throw new IllegalStateException("World generation interrupted", e);
+                    }
+                }
+
+                // Create world on main thread
+                World newWorld;
                 try {
-                    Thread.sleep(1000);
-                } catch (InterruptedException e) {
+                    newWorld = Bukkit.getScheduler().callSyncMethod(this, () -> {
+                        WorldCreator creator = new WorldCreator(worldName)
+                            .seed(seed)
+                            .environment(World.Environment.NORMAL);
+                        return creator.createWorld();
+                    }).get();
+                    
+                    if (newWorld == null) {
+                        throw new IllegalStateException("World creation failed");
+                    }
+                } catch (InterruptedException | ExecutionException e) {
                     Thread.currentThread().interrupt();
-                    throw new IllegalStateException("World generation interrupted", e);
+                    throw new IllegalStateException("World creation failed", e);
                 }
+
+                Bukkit.getScheduler().runTask(this, () -> {
+                    oldWorldToDelete = currentWorld;
+                    currentWorld = newWorld;
+                    Location spawn = newWorld.getSpawnLocation();
+
+                    // Reset only inventory for players in waiting room (those who died)
+                    for (Player player : Bukkit.getOnlinePlayers()) {
+                        if (player.getWorld().equals(waitingWorld)) {
+                            player.getInventory().clear();
+                        }
+                        resetPlayerHealth(player);
+                        player.teleport(spawn);
+                        player.setGameMode(GameMode.SURVIVAL);
+                        player.setInvulnerable(false);
+                    }
+
+                    broadcastToWaiting(Component.text("Teleporting to new world!", NamedTextColor.GREEN));
+                    disconnectedPlayers.clear();
+                    isGeneratingWorld = false;
+
+                    // Schedule old world deletion after 10 seconds
+                    if (oldWorldToDelete != null && !oldWorldToDelete.equals(waitingWorld)) {
+                        Bukkit.getScheduler().runTaskLater(this, () -> {
+                            Bukkit.unloadWorld(oldWorldToDelete, false);
+                            deleteWorld(oldWorldToDelete.getWorldFolder());
+                            getLogger().info(String.format("Deleted old world: %s", oldWorldToDelete.getName()));
+                        }, 200L); // 10 seconds (20 ticks/second * 10)
+                    }
+                });
+
+            } catch (IllegalStateException e) {
+                Bukkit.getScheduler().runTask(this, () -> {
+                    getLogger().severe(String.format("World generation failed: %s", e.getMessage()));
+                    broadcastToWaiting(Component.text("World generation failed!", NamedTextColor.RED));
+                    isGeneratingWorld = false;
+                });
             }
+        });
+    }
 
-            updateProgress(90, "Finalizing world");
-
-            Bukkit.getScheduler().runTask(this, () -> {
-                World oldWorld = currentWorld;
-                currentWorld = newWorld;
-                Location spawn = newWorld.getSpawnLocation();
-
-                for (Player player : Bukkit.getOnlinePlayers()) {
-                    resetPlayer(player);
-                    player.teleport(spawn);
-                    player.setGameMode(GameMode.SURVIVAL);
-                    player.setInvulnerable(false);
-                }
-
-                updateProgress(100, "World ready!");
-                broadcastToWaiting(Component.text("Teleporting to new world...", NamedTextColor.GREEN));
-
-                disconnectedPlayers.clear();
-                if (oldWorld != null && !oldWorld.equals(waitingWorld)) {
-                    cleanUpOldWorlds();
-                }
-
-                isGeneratingWorld = false;
-            });
-
-        } catch (IllegalStateException e) {
-            Bukkit.getScheduler().runTask(this, () -> {
-                getLogger().severe(String.format("World generation failed: %s", e.getMessage()));
-                broadcastToWaiting(Component.text("World generation failed!", NamedTextColor.RED));
-                isGeneratingWorld = false;
-            });
-        }
-    });
-}
-
-
-    private void updateProgress(int progress, String message) {
-        worldProgress.set(progress);
-        broadcastToWaiting(Component.text(message + "... (" + progress + "%)", NamedTextColor.YELLOW));
+    private void resetPlayerHealth(Player player) {
+        player.setHealth(20);
+        player.setFoodLevel(20);
+        player.setSaturation(5);
     }
 
     private void broadcastToWaiting(Component message) {
         Bukkit.getOnlinePlayers().stream()
             .filter(p -> p.getWorld().equals(waitingWorld))
             .forEach(p -> p.sendMessage(message));
-    }
-
-    private void cleanUpOldWorlds() {
-        try {
-            File worldContainer = Bukkit.getWorldContainer();
-            
-            List<File> worldFolders = Arrays.stream(worldContainer.listFiles())
-                .filter(f -> f.isDirectory() && f.getName().startsWith("world_"))
-                .sorted(Comparator.comparingLong(File::lastModified).reversed())
-                .collect(Collectors.toList());
-            
-            for (int i = MAX_WORLD_HISTORY; i < worldFolders.size(); i++) {
-                File worldFolder = worldFolders.get(i);
-                if (worldFolder.getName().equals(WAITING_WORLD_NAME)) continue;
-                
-                World world = Bukkit.getWorld(worldFolder.getName());
-                if (world != null) {
-                    Bukkit.unloadWorld(world, false);
-                }
-                
-                deleteWorld(worldFolder);
-                getLogger().info(String.format("Deleted old world: %s", worldFolder.getName()));
-            }
-        } catch (Exception e) {
-            getLogger().warning(String.format("Failed to clean up old worlds: %s", e.getMessage()));
-        }
     }
 
     private boolean deleteWorld(File path) {
@@ -343,15 +368,6 @@ public final class SharedHealthPlugin extends JavaPlugin implements Listener {
             }
         }
         return path.delete();
-    }
-
-    private void resetPlayer(Player player) {
-        player.getInventory().clear();
-        player.setExp(0);
-        player.setLevel(0);
-        player.setHealth(20);
-        player.setFoodLevel(20);
-        player.setSaturation(5);
     }
 
     @EventHandler
