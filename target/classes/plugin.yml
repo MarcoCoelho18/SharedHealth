@@ -3,4 +3,11 @@ main: com.macacomilk.sharedhealth.SharedHealthPlugin
 version: 1.0
 api-version: "1.21"
 description: Synchronizes health among players
-authors: [YourName]
+authors: [Macacomilk]
+commands:
+  deaths:
+    description: Shows the top deaths leaderboard
+    usage: /deaths
+  damage:
+    description: Shows the top damage taken leaderboard
+    usage: /damage

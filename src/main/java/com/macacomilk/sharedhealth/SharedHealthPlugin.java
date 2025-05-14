@@ -1,12 +1,17 @@
 package com.macacomilk.sharedhealth;
 
 import java.io.File;
+import java.io.IOException;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.Random;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Collectors;
 
 import org.bukkit.Bukkit;
 import org.bukkit.GameMode;
@@ -20,6 +25,10 @@ import org.bukkit.WorldCreator;
 import org.bukkit.WorldType;
 import org.bukkit.attribute.Attribute;
 import org.bukkit.attribute.AttributeInstance;
+import org.bukkit.command.Command;
+import org.bukkit.command.CommandSender;
+import org.bukkit.configuration.ConfigurationSection;
+import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
@@ -36,7 +45,6 @@ import net.kyori.adventure.text.format.NamedTextColor;
 
 public final class SharedHealthPlugin extends JavaPlugin implements Listener {
 
-    // Plugin state
     private boolean isSyncing = false;
     private World waitingWorld;
     private World currentWorld;
@@ -47,21 +55,29 @@ public final class SharedHealthPlugin extends JavaPlugin implements Listener {
     private final AtomicInteger worldProgress = new AtomicInteger(0);
     private boolean isGeneratingWorld = false;
     private World oldWorldToDelete = null;
+    
+    private final Map<UUID, Integer> playerDeaths = new HashMap<>();
+    private final Map<UUID, Double> playerDamageTaken = new HashMap<>();
+    private File statsFile;
 
     @Override
     public void onEnable() {
         try {
-            // Initialize waiting area
             createWaitingWorld();
-            
-            // Register event listeners
             getServer().getPluginManager().registerEvents(this, this);
             
-            // Schedule repeating tasks
+            statsFile = new File(getDataFolder(), "player_stats.yml");
+            if (!getDataFolder().exists()) {
+                getDataFolder().mkdirs();
+            }
+            loadStats();
+            
+            getCommand("deaths").setExecutor(this::onDeathsCommand);
+            getCommand("damage").setExecutor(this::onDamageCommand);
+            
             scheduleWaitingAreaChecks();
             scheduleAmbientSounds();
             
-            // Set initial world
             currentWorld = Bukkit.getWorlds().get(0);
             getLogger().info("SharedHealthPlugin enabled");
         } catch (Exception e) {
@@ -70,8 +86,94 @@ public final class SharedHealthPlugin extends JavaPlugin implements Listener {
         }
     }
 
+    @Override
+    public void onDisable() {
+        saveStats();
+    }
+
+    private void loadStats() {
+        if (!statsFile.exists()) return;
+        
+        YamlConfiguration config = YamlConfiguration.loadConfiguration(statsFile);
+        ConfigurationSection deathsSection = config.getConfigurationSection("deaths");
+        ConfigurationSection damageSection = config.getConfigurationSection("damage");
+        
+        if (deathsSection != null) {
+            for (String key : deathsSection.getKeys(false)) {
+                playerDeaths.put(UUID.fromString(key), deathsSection.getInt(key));
+            }
+        }
+        
+        if (damageSection != null) {
+            for (String key : damageSection.getKeys(false)) {
+                playerDamageTaken.put(UUID.fromString(key), damageSection.getDouble(key));
+            }
+        }
+    }
+    
+    private void saveStats() {
+        YamlConfiguration config = new YamlConfiguration();
+        
+        ConfigurationSection deathsSection = config.createSection("deaths");
+        playerDeaths.forEach((uuid, count) -> deathsSection.set(uuid.toString(), count));
+        
+        ConfigurationSection damageSection = config.createSection("damage");
+        playerDamageTaken.forEach((uuid, amount) -> damageSection.set(uuid.toString(), amount));
+        
+        try {
+            config.save(statsFile);
+        } catch (IOException e) {
+            getLogger().severe("Failed to save player stats: " + e.getMessage());
+        }
+    }
+    
+    private boolean onDeathsCommand(CommandSender sender, Command command, String label, String[] args) {
+        Map<UUID, Integer> sortedDeaths = playerDeaths.entrySet().stream()
+            .sorted(Map.Entry.<UUID, Integer>comparingByValue().reversed())
+            .collect(Collectors.toMap(
+                Map.Entry::getKey,
+                Map.Entry::getValue,
+                (e1, e2) -> e1,
+                LinkedHashMap::new
+            ));
+        
+        sender.sendMessage(Component.text("Top Deaths:", NamedTextColor.GOLD));
+        int rank = 1;
+        for (Map.Entry<UUID, Integer> entry : sortedDeaths.entrySet()) {
+            if (rank > 10) break;
+            Player player = Bukkit.getPlayer(entry.getKey());
+            String name = player != null ? player.getName() : Bukkit.getOfflinePlayer(entry.getKey()).getName();
+            sender.sendMessage(Component.text(rank + ". " + name + ": " + entry.getValue() + " deaths", 
+                NamedTextColor.YELLOW));
+            rank++;
+        }
+        return true;
+    }
+    
+    private boolean onDamageCommand(CommandSender sender, Command command, String label, String[] args) {
+        Map<UUID, Double> sortedDamage = playerDamageTaken.entrySet().stream()
+            .sorted(Map.Entry.<UUID, Double>comparingByValue().reversed())
+            .collect(Collectors.toMap(
+                Map.Entry::getKey,
+                Map.Entry::getValue,
+                (e1, e2) -> e1,
+                LinkedHashMap::new
+            ));
+        
+        sender.sendMessage(Component.text("Top Damage Taken:", NamedTextColor.GOLD));
+        int rank = 1;
+        for (Map.Entry<UUID, Double> entry : sortedDamage.entrySet()) {
+            if (rank > 10) break;
+            Player player = Bukkit.getPlayer(entry.getKey());
+            String name = player != null ? player.getName() : Bukkit.getOfflinePlayer(entry.getKey()).getName();
+            sender.sendMessage(Component.text(rank + ". " + name + ": " + String.format("%.1f", entry.getValue()) + " damage", 
+                NamedTextColor.YELLOW));
+            rank++;
+        }
+        return true;
+    }
+
     private void createWaitingWorld() {
-        // Create or load waiting world
         waitingWorld = Bukkit.getWorld(WAITING_WORLD_NAME);
         
         if (waitingWorld == null) {
@@ -86,23 +188,19 @@ public final class SharedHealthPlugin extends JavaPlugin implements Listener {
             }
         }
         
-        // Configure waiting world rules
         waitingWorld.setGameRule(GameRule.DO_IMMEDIATE_RESPAWN, true);
         waitingWorld.setGameRule(GameRule.DO_MOB_SPAWNING, false);
         waitingWorld.setGameRule(GameRule.DO_DAYLIGHT_CYCLE, false);
         waitingWorld.setGameRule(GameRule.DO_WEATHER_CYCLE, false);
         
-        // Build waiting platform
         createWaitingPlatform();
         waitingAreaCenter = new Location(waitingWorld, 0.5, 6, 0.5);
     }
 
     private void createWaitingPlatform() {
-        // Create bedrock floor (15x15)
         for (int x = -7; x <= 7; x++) {
             for (int z = -7; z <= 7; z++) {
                 waitingWorld.getBlockAt(x, 4, z).setType(Material.BEDROCK);
-                // Create patterned floor
                 if ((x + z) % 2 == 0) {
                     waitingWorld.getBlockAt(x, 5, z).setType(Material.POLISHED_ANDESITE);
                 } else {
@@ -111,7 +209,6 @@ public final class SharedHealthPlugin extends JavaPlugin implements Listener {
             }
         }
         
-        // Create decorative walls
         for (int y = 5; y <= 10; y++) {
             for (int x = -8; x <= 8; x++) {
                 Material wallMaterial = (y % 2 == 0) ? Material.STONE_BRICKS : Material.MOSSY_STONE_BRICKS;
@@ -125,7 +222,6 @@ public final class SharedHealthPlugin extends JavaPlugin implements Listener {
             }
         }
         
-        // Create decorative pillars at corners
         for (int y = 5; y <= 11; y++) {
             Material pillarMaterial = (y % 3 == 0) ? Material.QUARTZ_PILLAR : Material.SMOOTH_QUARTZ;
             waitingWorld.getBlockAt(-8, y, -8).setType(pillarMaterial);
@@ -134,7 +230,6 @@ public final class SharedHealthPlugin extends JavaPlugin implements Listener {
             waitingWorld.getBlockAt(8, y, 8).setType(pillarMaterial);
         }
         
-        // Create stained glass ceiling with pattern
         for (int x = -7; x <= 7; x++) {
             for (int z = -7; z <= 7; z++) {
                 Material glassType;
@@ -149,32 +244,26 @@ public final class SharedHealthPlugin extends JavaPlugin implements Listener {
             }
         }
         
-        // Add decorative lighting (sea lanterns)
         for (int x = -6; x <= 6; x += 4) {
             for (int z = -6; z <= 6; z += 4) {
                 waitingWorld.getBlockAt(x, 10, z).setType(Material.SEA_LANTERN);
             }
         }
         
-        // Add some plants and decorations
-waitingWorld.getBlockAt(2, 6, 0).setType(Material.FLOWER_POT);
-waitingWorld.getBlockAt(-2, 6, 0).setType(Material.FLOWER_POT);
+        waitingWorld.getBlockAt(2, 6, 0).setType(Material.FLOWER_POT);
+        waitingWorld.getBlockAt(-2, 6, 0).setType(Material.FLOWER_POT);
 
-// Add some banners on walls
-for (int x = -6; x <= 6; x += 3) {
-    waitingWorld.getBlockAt(x, 8, -7).setType(Material.WHITE_WALL_BANNER);
-    waitingWorld.getBlockAt(x, 8, 7).setType(Material.WHITE_WALL_BANNER);
-}
+        for (int x = -6; x <= 6; x += 3) {
+            waitingWorld.getBlockAt(x, 8, -7).setType(Material.WHITE_WALL_BANNER);
+            waitingWorld.getBlockAt(x, 8, 7).setType(Material.WHITE_WALL_BANNER);
+        }
 
-// Add red carpet to the 3x3 center area
-for (int x = -1; x <= 1; x++) {
-    for (int z = -1; z <= 1; z++) {
-        waitingWorld.getBlockAt(x, 6, z).setType(Material.RED_CARPET);
-    }
-}
-
+        for (int x = -1; x <= 1; x++) {
+            for (int z = -1; z <= 1; z++) {
+                waitingWorld.getBlockAt(x, 6, z).setType(Material.RED_CARPET);
+            }
+        }
         
-        // Add some seating (stairs)
         waitingWorld.getBlockAt(3, 5, 3).setType(Material.OAK_STAIRS);
         waitingWorld.getBlockAt(-3, 5, 3).setType(Material.OAK_STAIRS);
         waitingWorld.getBlockAt(3, 5, -3).setType(Material.OAK_STAIRS);
@@ -194,7 +283,6 @@ for (int x = -1; x <= 1; x++) {
                         player.teleport(waitingAreaCenter);
                     }
                     
-                    // Add ambient particles around players
                     player.spawnParticle(Particle.END_ROD, 
                         player.getLocation().add(0, 2, 0), 
                         3, 0.5, 0.5, 0.5, 0.05);
@@ -212,7 +300,7 @@ for (int x = -1; x <= 1; x++) {
                         0.3f, 1.0f);
                 }
             }
-        }, 0L, 100L); // Every 5 seconds
+        }, 0L, 100L);
     }
 
     @EventHandler
@@ -223,7 +311,6 @@ for (int x = -1; x <= 1; x++) {
             !currentWorld.equals(waitingWorld)) {
             
             Bukkit.getScheduler().runTaskLater(this, () -> {
-                // Don't reset inventory on join
                 player.teleport(currentWorld.getSpawnLocation());
                 player.setGameMode(GameMode.SURVIVAL);
                 player.setInvulnerable(false);
@@ -243,10 +330,11 @@ for (int x = -1; x <= 1; x++) {
 
     @EventHandler
     public void onPlayerDeath(PlayerDeathEvent event) {
+        Player player = event.getPlayer();
+        playerDeaths.merge(player.getUniqueId(), 1, Integer::sum);
+        
         event.setKeepInventory(true);
         event.setKeepLevel(true);
-        
-        Player player = event.getPlayer();
         disconnectedPlayers.remove(player.getUniqueId());
         
         Bukkit.getScheduler().runTask(this, () -> {
@@ -274,7 +362,6 @@ for (int x = -1; x <= 1; x++) {
                 long seed = random.nextLong();
                 String worldName = "world_" + System.currentTimeMillis();
 
-                // Simulate generation time
                 for (int i = 0; i <= 100; i++) {
                     try {
                         Thread.sleep(50);
@@ -284,7 +371,6 @@ for (int x = -1; x <= 1; x++) {
                     }
                 }
 
-                // Create world on main thread
                 World newWorld;
                 try {
                     newWorld = Bukkit.getScheduler().callSyncMethod(this, () -> {
@@ -307,7 +393,6 @@ for (int x = -1; x <= 1; x++) {
                     currentWorld = newWorld;
                     Location spawn = newWorld.getSpawnLocation();
 
-                    // Reset only inventory for players in waiting room (those who died)
                     for (Player player : Bukkit.getOnlinePlayers()) {
                         if (player.getWorld().equals(waitingWorld)) {
                             player.getInventory().clear();
@@ -322,13 +407,12 @@ for (int x = -1; x <= 1; x++) {
                     disconnectedPlayers.clear();
                     isGeneratingWorld = false;
 
-                    // Schedule old world deletion after 10 seconds
                     if (oldWorldToDelete != null && !oldWorldToDelete.equals(waitingWorld)) {
                         Bukkit.getScheduler().runTaskLater(this, () -> {
                             Bukkit.unloadWorld(oldWorldToDelete, false);
                             deleteWorld(oldWorldToDelete.getWorldFolder());
                             getLogger().info(String.format("Deleted old world: %s", oldWorldToDelete.getName()));
-                        }, 200L); // 10 seconds (20 ticks/second * 10)
+                        }, 200L);
                     }
                 });
 
@@ -376,6 +460,8 @@ for (int x = -1; x <= 1; x++) {
         
         Player damagedPlayer = (Player) event.getEntity();
         double damageAmount = event.getFinalDamage();
+        playerDamageTaken.merge(damagedPlayer.getUniqueId(), damageAmount, Double::sum);
+        
         double newHealth = Math.max(damagedPlayer.getHealth() - damageAmount, 0);
         
         String cause = event.getCause().toString().toLowerCase().replace("_", " ");
